@@ -1,0 +1,38 @@
+b. Trường nên bỏ
+
+Sai số (redundant):
+
+koi_period_err1, koi_period_err2, koi_time0bk_err1, koi_time0bk_err2, koi_impact_err1, koi_impact_err2, koi_duration_err1, koi_duration_err2, koi_depth_err1, koi_depth_err2, koi_prad_err1, koi_prad_err2, koi_teq_err1, koi_teq_err2, koi_insol_err1, koi_insol_err2, koi_steff_err1, koi_steff_err2, koi_slogg_err1, koi_slogg_err2, koi_srad_err1, koi_srad_err2.
+Lý do: Các cột sai số (upper/lower uncertainty) trùng lặp thông tin với koi_model_snr, gây nhiễu và tăng độ phức tạp mà không cải thiện dự đoán.
+
+
+== # Tiến trình Làm sạch Dữ liệu - Dự án Exoplanet Detection
+
+## Mục tiêu
+- Phát triển mô hình AI/ML để phát hiện exoplanet từ dữ liệu Kepler, phù hợp với NASA Space Apps Challenge 2025.
+- Tập trung vào tín hiệu transit và habitable zone.
+
+## Các bước đã thực hiện
+
+### Bước 1: Load và kiểm tra dữ liệu
+- **Thao tác**: Load file `kepler_data.csv`, kiểm tra kích thước (9564 rows, 49 columns) và NaN.
+- **Kết quả**: Xác định NaN ở cột phụ (e.g., `kepler_name`: 6817, `koi_teq_err1`: 9564) và cột cốt lõi (e.g., `koi_depth`: 363).
+
+### Bước 2: Lọc cột
+- **Thao tác**: Giữ 12 cột cốt lõi: `koi_disposition`, `koi_period`, `koi_time0bk`, `koi_duration`, `koi_depth`, `koi_prad`, `koi_steff`, `koi_srad`, `koi_model_snr`, `koi_teq`, `koi_insol`, `koi_slogg`.
+- **Kết quả**: Giảm xuống (9564, 12), NaN còn ở cột số (~3-4%).
+- **Lý do bỏ**: Loại `koi_kepmag`, flag, err, ID, tọa độ vì không liên quan trực tiếp.
+
+### Bước 3: Xử lý missing values (NaN)
+- **Thao tác**: Điền NaN bằng median cho cột số, giữ nguyên nhãn.
+- **Kết quả**: 0 NaN, giữ nguyên (9564, 12).
+- **Lý do**: Median tránh outlier, phù hợp với dữ liệu thiên văn.
+
+### Bước 4: Chuẩn hóa dữ liệu (chuẩn bị)
+- **Thao tác**: Sắp áp dụng `StandardScaler` cho cột số (mean=0, std=1).
+- **Lý do**: Đảm bảo đặc trưng có thang đo đồng nhất, tối ưu hóa mô hình (e.g., Random Forest).
+- **Ghi chú**: Sẽ one-hot encode `koi_disposition`, không chuẩn hóa nhãn. Mean/std sẽ được lưu để áp dụng cho dữ liệu input từ user khi test trên web.
+
+## Ghi chú
+- Tiến trình hiện tại: Làm sạch data, ở bước 4 (chưa chạy).
+- Lưu ý: Dữ liệu input từ user trên web cần chuẩn hóa bằng mean/std từ train data để tránh sai lệch.

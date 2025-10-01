@@ -1,0 +1,39 @@
+# Python/Flask
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+ENV/
+.venv/
+
+# Env files (không commit secret!)
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# Logs và data tạm
+logs/
+*.log
+*.tmp
+
+# IDE/Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Data và models (nếu nhạy cảm, tùy chọn ignore)
+data/*.csv  # Ignore CSV lớn nếu không muốn commit data
+models/*.pkl  # Ignore model files lớn
+
+# Git
+.git/
