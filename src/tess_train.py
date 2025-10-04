@@ -4,9 +4,10 @@ from sklearn.model_selection import train_test_split, GridSearchCV
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
 import pickle
-import json  # Thêm để save features
+import json
 import os
 import logging
+import time
 
 # Thiết lập logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -24,6 +25,9 @@ def train_tess_model(data_path, model_name, output_dir=None, param_grid=None):
         - model_path: Đường dẫn file .pkl.
         - stats: dict chứa train/test accuracy, precision, recall, F1, feature importance.
     """
+    start_time = time.time()
+    logger.info("Starting TESS model training...")
+
     # Thiết lập đường dẫn
     if output_dir is None:
         output_dir = os.path.join(os.path.dirname(__file__), '..', 'models')
@@ -49,8 +53,15 @@ def train_tess_model(data_path, model_name, output_dir=None, param_grid=None):
     X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
     logger.info(f"Train shape: {X_train.shape}, Test shape: {X_test.shape}")
 
-    # Thiết lập param_grid mặc định nếu không cung cấp
-    if param_grid is None:
+    # Thiết lập param_grid tối ưu cho production
+    if param_grid is None or os.getenv('ENV') == 'production':
+        param_grid = {
+            'n_estimators': [100],  # Giảm để tối ưu thời gian
+            'max_depth': [10],
+            'min_samples_split': [5],
+            'max_features': ['sqrt']
+        }
+    else:
         param_grid = {
             'n_estimators': [100, 200],
             'max_depth': [8, 10],
@@ -58,10 +69,20 @@ def train_tess_model(data_path, model_name, output_dir=None, param_grid=None):
             'max_features': ['sqrt']
         }
 
+    # Thiết lập n_jobs cho production
+    n_jobs = 1 if os.getenv('ENV') == 'production' else -1
+
     # Huấn luyện mô hình với GridSearchCV
     model = RandomForestClassifier(random_state=42)
-    grid_search = GridSearchCV(estimator=model, param_grid=param_grid, cv=5, n_jobs=-1)
+    grid_search = GridSearchCV(
+        estimator=model,
+        param_grid=param_grid,
+        cv=3 if os.getenv('ENV') == 'production' else 5,  # Giảm folds trong production
+        n_jobs=n_jobs,
+        scoring='accuracy'
+    )
     grid_search.fit(X_train, y_train)
+    logger.info(f"GridSearchCV completed in {time.time() - start_time:.2f} seconds")
 
     # Lấy mô hình tốt nhất
     best_model = grid_search.best_estimator_
@@ -82,7 +103,8 @@ def train_tess_model(data_path, model_name, output_dir=None, param_grid=None):
         'test_f1': float(f1_score(y_test, y_test_pred, average='weighted')),
         'feature_importance': {
             col: float(imp) for col, imp in zip(X.columns, best_model.feature_importances_)
-        }
+        },
+        'training_time_seconds': float(time.time() - start_time)
     }
     logger.info(f"Training stats: {stats}")
 
@@ -93,15 +115,16 @@ def train_tess_model(data_path, model_name, output_dir=None, param_grid=None):
         pickle.dump(best_model, f)
     logger.info(f"Saved model: {model_path}")
 
-    # Thêm: Lưu features info (danh sách tên + importance) vào json
+    # Lưu features info vào JSON
     features_info = {
         'num_features': len(X.columns),
         'features': X.columns.tolist(),
-        'importance': dict(stats['feature_importance'])  # Top importance
+        'importance': dict(stats['feature_importance'])
     }
     features_path = os.path.join(output_dir, f'{model_name}_features.json')
     with open(features_path, 'w') as f:
         json.dump(features_info, f, indent=2)
     logger.info(f"Saved features info: {features_path} (num: {features_info['num_features']})")
 
+    logger.info(f"Total training time: {time.time() - start_time:.2f} seconds")
     return model_path, stats
