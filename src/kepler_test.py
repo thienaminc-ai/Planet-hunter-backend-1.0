@@ -1,3 +1,4 @@
+# kepler_test.py
 import pandas as pd
 import numpy as np
 import pickle
@@ -10,7 +11,7 @@ logger = logging.getLogger(__name__)
 
 def list_models():
     """
-    Liệt kê các models trong thư mục models/ (tên file *_rf_model.pkl).
+    Liệt kê các models trong thư mục models/ (tên file *.pkl).
     """
     models_dir = os.path.join(os.path.dirname(__file__), '..', 'models')
     if not os.path.exists(models_dir):
@@ -18,9 +19,9 @@ def list_models():
         return []
     
     models = [
-        f.replace('_rf_model.pkl', '') 
+        f.replace('.pkl', '') 
         for f in os.listdir(models_dir) 
-        if f.endswith('_rf_model.pkl')
+        if f.endswith('.pkl')
     ]
     logger.info(f"Found {len(models)} models: {models}")
     return models
@@ -34,7 +35,7 @@ def predict_kepler_model(model_name, df_processed):
     """
     # Đường dẫn
     models_dir = os.path.join(os.path.dirname(__file__), '..', 'models')
-    model_path = os.path.join(models_dir, f'{model_name}_rf_model.pkl')
+    model_path = os.path.join(models_dir, f'{model_name}.pkl')
     if not os.path.exists(model_path):
         logger.error(f"Model not found: {model_path}")
         raise FileNotFoundError(f"Model '{model_name}' not found.")

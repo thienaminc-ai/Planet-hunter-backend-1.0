@@ -5,10 +5,14 @@ import os
 import pandas as pd
 import numpy as np
 import logging
-import json  # Added missing import
-from kepler_data_processing import preprocess_kepler_data, transform_single_row
+import json
+from kepler_data_processing import preprocess_kepler_data, transform_single_row as transform_kepler
+from tess_data_preprocessing import preprocess_tess_data, transform_single_row as transform_tess
 from kepler_train import train_kepler_model
-from kepler_test import predict_kepler_model, list_models
+from tess_train import train_tess_model
+from kepler_test import predict_kepler_model
+from tess_test import predict_tess_model
+
 # Thiết lập logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -22,7 +26,21 @@ app = Flask(__name__)
 frontend_url = os.getenv('FRONTEND_URL', 'http://localhost:3000')
 
 # Cấu hình CORS
-CORS(app, origins=[frontend_url], supports_credentials=True)
+CORS(app, origins=[
+    "https://planet-hunter-frontend-1-0.vercel.app",
+    "http://localhost:3000"
+], supports_credentials=True)
+
+# Route health check cho Render.com
+@app.route('/', methods=['GET'])
+def health_check():
+    logger.info("Health check accessed")
+    return jsonify({
+        'status': 'healthy',
+        'message': 'Planet Hunter Backend API is running',
+        'version': '1.0',
+        'supported_datasets': ['kepler', 'tess']
+    }), 200
 
 # Hàm chuyển đổi NumPy types thành Python types
 def convert_numpy_types(obj):
@@ -38,24 +56,23 @@ def convert_numpy_types(obj):
         return [convert_numpy_types(item) for item in obj]
     return obj
 
-# Route /list_datasets: Liệt kê các file CSV biến thể trong data/kepler
+# Route /list_datasets: Liệt kê các file CSV biến thể (support both Kepler & TESS)
 @app.route('/list_datasets', methods=['GET'])
 def list_datasets():
     try:
-        # Sửa đường dẫn: từ src/data/kepler thành data/kepler
-        data_dir = os.path.join(os.path.dirname(__file__), '..', 'data', 'kepler')
-        logger.info(f"Listing datasets in: {data_dir}")
+        dataset = request.args.get('dataset', 'kepler')  # Default Kepler, or 'tess'
+        data_dir = os.path.join(os.path.dirname(__file__), '..', 'data', dataset)
+        logger.info(f"Listing datasets in: {data_dir} for {dataset}")
         
-        # Kiểm tra thư mục tồn tại
         if not os.path.exists(data_dir):
             logger.warning(f"Directory not found: {data_dir}. Returning empty dataset list.")
             return jsonify({
                 'status': 'success',
                 'datasets': [],
-                'message': 'No processed datasets found.'
+                'message': 'No processed datasets found.',
+                'dataset': dataset
             })
         
-        # Chỉ lấy file CSV có hậu tố _processed.csv
         datasets = [
             f.replace('_processed.csv', '') 
             for f in os.listdir(data_dir) 
@@ -66,20 +83,29 @@ def list_datasets():
         return jsonify({
             'status': 'success',
             'datasets': datasets,
-            'message': f'Found {len(datasets)} processed datasets.'
+            'message': f'Found {len(datasets)} processed datasets.',
+            'dataset': dataset
         })
     
     except Exception as e:
         logger.error(f"List datasets error: {str(e)}")
         return jsonify({'status': 'error', 'message': f'Failed to list datasets: {str(e)}'}), 500
 
-# Route /analyze: Phân tích shape và columns từ CSV
+# Route /analyze: Phân tích shape và columns từ CSV (support Kepler & TESS)
 @app.route('/analyze', methods=['POST'])
 def analyze_columns():
     try:
-        # Sửa đường dẫn
-        file_path = os.path.join(os.path.dirname(__file__), '..', 'data', 'kepler', 'kepler data.csv')
-        logger.info(f"Đang load file: {file_path}")
+        data = request.get_json(force=True)
+        dataset = data.get('dataset', 'kepler')  # 'kepler' or 'tess'
+        
+        if dataset == 'kepler':
+            file_path = os.path.join(os.path.dirname(__file__), '..', 'data', 'kepler', 'kepler data.csv')
+        elif dataset == 'tess':
+            file_path = os.path.join(os.path.dirname(__file__), '..', 'data', 'tess', 'tess data.csv')
+        else:
+            return jsonify({'status': 'error', 'message': 'Invalid dataset: kepler or tess'}), 400
+            
+        logger.info(f"Đang load file: {file_path} for {dataset}")
         df = pd.read_csv(file_path, comment='#')
         
         shape = df.shape
@@ -90,20 +116,21 @@ def analyze_columns():
             'shape': {'rows': int(shape[0]), 'cols': int(shape[1])},
             'columns': columns,
             'message': f'Phân tích thành công: {shape[0]} hàng, {shape[1]} cột.',
-            'frontend_redirect': f'{frontend_url}/preprocess'
+            'frontend_redirect': f'{frontend_url}/preprocess?dataset={dataset}',
+            'dataset': dataset
         }
         
-        logger.info(f"Analyze OK: shape {shape}, {len(columns)} columns")
+        logger.info(f"Analyze OK: shape {shape}, {len(columns)} columns for {dataset}")
         return jsonify(result)
     
     except FileNotFoundError as fe:
         logger.error(f"FileNotFound: {fe}")
-        return jsonify({'status': 'error', 'message': f'File "kepler data.csv" không tồn tại ở {file_path}.'}), 404
+        return jsonify({'status': 'error', 'message': f'File "{dataset} data.csv" không tồn tại ở {file_path}.'}), 404
     except Exception as e:
         logger.error(f"Analyze error: {str(e)}")
         return jsonify({'status': 'error', 'message': f'Lỗi phân tích: {str(e)}'}), 500
 
-# Route /create_variant: Tạo variant dữ liệu từ columns và name
+# Route /create_variant: Tạo variant dữ liệu từ columns và name (support Kepler & TESS)
 @app.route('/create_variant', methods=['POST'])
 def create_variant():
     try:
@@ -113,20 +140,25 @@ def create_variant():
         columns = data.get('columns', [])
         name = data.get('name', 'default_variant').strip()
         remove_outliers = data.get('remove_outliers', False)
+        dataset = data.get('dataset', 'kepler')  # 'kepler' or 'tess'
         
-        logger.info(f"Calling preprocess_kepler_data with: name={name}, columns={columns}, remove_outliers={remove_outliers}")
+        logger.info(f"Calling preprocess_{dataset}_data with: name={name}, columns={columns}, remove_outliers={remove_outliers}, dataset={dataset}")
         
         if not name:
             logger.error("Dataset name is required.")
             return jsonify({'status': 'error', 'message': 'Dataset name is required.'}), 400
         
-        # Unpack 4 returns (an toàn: imputer_path có thể None)
-        csv_path, imputer_path, scaler_path, stats = preprocess_kepler_data(columns, name, remove_outliers)
+        if dataset == 'kepler':
+            csv_path, imputer_path, scaler_path, stats = preprocess_kepler_data(columns, name, remove_outliers)
+        elif dataset == 'tess':
+            csv_path, imputer_path, scaler_path, stats = preprocess_tess_data(columns, name, remove_outliers)
+        else:
+            return jsonify({'status': 'error', 'message': 'Invalid dataset: kepler or tess'}), 400
+            
         stats = convert_numpy_types(stats)
-        
         logger.info(f"Preprocessing completed: stats={stats}")
         
-        message = 'Tạo biến thể thành công!'
+        message = f'Tạo biến thể {dataset.upper()} thành công!'
         if stats['flag_noise_dropped'] > 0:
             message += f' (Loại bỏ {stats["flag_noise_dropped"]} rows flag nhiễu)'
         if stats['outliers_dropped'] > 0:
@@ -134,7 +166,6 @@ def create_variant():
         if stats['total_noise_removed_pct'] > 0:
             message += f' (Tổng nhiễu loại bỏ: {stats["total_noise_removed_pct"]}%)'
         
-        # Files dict: Backward-compatible, thêm imputer optional
         files = {'csv': csv_path, 'scaler': scaler_path}
         if imputer_path:
             files['imputer'] = imputer_path
@@ -144,7 +175,8 @@ def create_variant():
             'message': message,
             'name': name,
             'files': files,
-            'stats': stats
+            'stats': stats,
+            'dataset': dataset
         })
     
     except ValueError as ve:
@@ -154,7 +186,7 @@ def create_variant():
         logger.error(f"Create_variant error: {str(e)}")
         return jsonify({'status': 'error', 'message': f'Processing failed: {str(e)}'}), 500
 
-# Route /train: Huấn luyện mô hình trên file CSV đã xử lý
+# Route /train: Huấn luyện mô hình trên file CSV đã xử lý (support Kepler & TESS)
 @app.route('/train', methods=['POST'])
 def train():
     try:
@@ -162,7 +194,9 @@ def train():
         logger.info(f"Received payload: {data}")
         
         dataset_name = data.get('dataset_name', '').strip()
-        model_name = data.get('model_name', f'{dataset_name}_model').strip()
+        model_name = data.get('model_name', f'{data.get("dataset", "kepler")}_{dataset_name}_model').strip()
+        param_grid = data.get('param_grid')  # Optional param_grid
+        dataset = data.get('dataset', 'kepler')  # 'kepler' or 'tess'
         
         if not dataset_name:
             logger.error("Dataset name is required.")
@@ -171,23 +205,32 @@ def train():
             logger.error("Model name is required.")
             return jsonify({'status': 'error', 'message': 'Model name is required.'}), 400
         
-        # Sửa đường dẫn
-        data_path = os.path.join(os.path.dirname(__file__), '..', 'data', 'kepler', f'{dataset_name}_processed.csv')
-        logger.info(f"Training model with data: {data_path}, model_name: {model_name}")
+        data_path = os.path.join(os.path.dirname(__file__), '..', 'data', dataset, f'{dataset_name}_processed.csv')
+        logger.info(f"Training {dataset} model with data: {data_path}, model_name: {model_name}, param_grid: {param_grid}")
         
-        model_path, stats = train_kepler_model(data_path, model_name)
+        if dataset == 'kepler':
+            model_path, stats = train_kepler_model(data_path, model_name, param_grid=param_grid)
+        elif dataset == 'tess':
+            model_path, stats = train_tess_model(data_path, model_name, param_grid=param_grid)
+        else:
+            return jsonify({'status': 'error', 'message': 'Invalid dataset: kepler or tess'}), 400
+            
         stats = convert_numpy_types(stats)
         
         logger.info(f"Training completed: stats={stats}")
         
-        message = f'Huấn luyện thành công! Test accuracy: {stats["test_accuracy"]:.2f}'
+        display_model_name = os.path.basename(model_path).replace('.pkl', '')
+        
+        message = f'Huấn luyện {dataset.upper()} thành công! Test accuracy: {stats["test_accuracy"]:.2f}'
         
         return jsonify({
             'status': 'success',
             'message': message,
-            'model_name': model_name,
+            'model_name': display_model_name,
             'model_path': model_path,
-            'stats': stats
+            'stats': stats,
+            'best_params': stats.get('best_params', 'Default'),
+            'dataset': dataset
         })
     
     except FileNotFoundError as fe:
@@ -200,21 +243,25 @@ def train():
         logger.error(f"Train error: {str(e)}")
         return jsonify({'status': 'error', 'message': f'Training failed: {str(e)}'}), 500
 
-# Route /list_models: Liệt kê các models trong models/
+# Route /list_models: Liệt kê các models trong models/ (support both)
 @app.route('/list_models', methods=['GET'])
 def list_models_route():
     try:
-        models = list_models()
+        dataset = request.args.get('dataset', 'kepler')
+        models_dir = os.path.join(os.path.dirname(__file__), '..', 'models')
+        models = [f for f in os.listdir(models_dir) if f.endswith('.pkl') and dataset in f]
+        models = [m.replace('.pkl', '') for m in models]
         return jsonify({
             'status': 'success',
             'models': models,
-            'message': f'Found {len(models)} trained models.'
+            'message': f'Found {len(models)} trained models for {dataset}.',
+            'dataset': dataset
         })
     except Exception as e:
         logger.error(f"List models error: {str(e)}")
         return jsonify({'status': 'error', 'message': f'Failed to list models: {str(e)}'}), 500
 
-# Route /predict: Predict trên model với input data
+# Route /predict: Predict trên model với input data (support Kepler & TESS)
 @app.route('/predict', methods=['POST'])
 def predict():
     try:
@@ -222,7 +269,8 @@ def predict():
         logger.info(f"Received predict payload: {data}")
         
         model_name = data.get('model_name', '').strip()
-        input_data = data.get('input_data', {})  # Dict of features (raw)
+        input_data = data.get('input_data', {})
+        dataset = data.get('dataset', 'kepler')
         
         if not model_name:
             logger.error("Model name is required.")
@@ -232,14 +280,18 @@ def predict():
             logger.error("Input data is required.")
             return jsonify({'status': 'error', 'message': 'Input data is required.'}), 400
         
-        # Extract dataset_name
-        dataset_name = model_name.replace('_model', '')
+        base_model_name = model_name.replace('_rf_model', '')
+        dataset_name = base_model_name.replace(f'{dataset}_', '').replace('_model', '')
         
-        # Preprocess input raw → df_processed (sử dụng hàm từ module)
-        df_processed = transform_single_row(dataset_name, input_data)
-        
-        # Gọi predict với df_processed
-        result = predict_kepler_model(model_name, df_processed)
+        if dataset == 'kepler':
+            df_processed = transform_kepler(dataset_name, input_data)
+            result = predict_kepler_model(model_name, df_processed)
+        elif dataset == 'tess':
+            df_processed = transform_tess(dataset_name, input_data)
+            result = predict_tess_model(model_name, df_processed)
+        else:
+            return jsonify({'status': 'error', 'message': 'Invalid dataset: kepler or tess'}), 400
+            
         result = convert_numpy_types(result)
         
         logger.info(f"Prediction completed: {result}")
@@ -250,7 +302,8 @@ def predict():
             'status': 'success',
             'message': message,
             'model_name': model_name,
-            'result': result
+            'result': result,
+            'dataset': dataset
         })
     
     except FileNotFoundError as fe:
@@ -263,16 +316,18 @@ def predict():
         logger.error(f"Predict error: {str(e)}")
         return jsonify({'status': 'error', 'message': f'Prediction failed: {str(e)}'}), 500
 
-# Route /model_features: Lấy info features của model (số lượng, tên, importance)
+# Route /model_features: Lấy info features của model (support both)
 @app.route('/model_features', methods=['GET'])
 def model_features():
     try:
         model_name = request.args.get('model_name', '').strip()
+        dataset = request.args.get('dataset', 'kepler')
         if not model_name:
             return jsonify({'status': 'error', 'message': 'Model name is required.'}), 400
         
+        base_model_name = model_name.replace('_rf_model', '')
         models_dir = os.path.join(os.path.dirname(__file__), '..', 'models')
-        features_path = os.path.join(models_dir, f'{model_name}_features.json')
+        features_path = os.path.join(models_dir, f'{base_model_name}_features.json')
         
         if not os.path.exists(features_path):
             logger.error(f"Features file not found: {features_path}")
@@ -287,7 +342,8 @@ def model_features():
             'model_name': model_name,
             'num_features': features_info['num_features'],
             'features': features_info['features'],
-            'importance': features_info['importance']  # Có thể sort top 10 ở frontend
+            'importance': features_info['importance'],
+            'dataset': dataset
         })
     
     except Exception as e:
@@ -301,12 +357,12 @@ def status():
         return jsonify({
             'status': 'Backend running',
             'version': '1.0',
-            'frontend_url': frontend_url
+            'frontend_url': frontend_url,
+            'supported_datasets': ['kepler', 'tess']
         })
     except Exception as e:
         logger.error(f"Status error: {str(e)}")
         return jsonify({'status': 'error', 'message': str(e)}), 500
-
 
 # Global error handler
 @app.errorhandler(Exception)
@@ -319,5 +375,5 @@ def handle_global_error(error):
     }), 500
 
 if __name__ == '__main__':
-    port = int(os.getenv('API_PORT', 5001))
-    app.run(debug=True, host='0.0.0.0', port=port, use_reloader=False)
+    port = int(os.getenv('PORT', 5001))
+    app.run(debug=False, host='0.0.0.0', port=port, use_reloader=False)
